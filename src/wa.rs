@@ -1,12 +1,11 @@
+use crate::{run_with_timeout, Context};
+use anyhow::anyhow;
+use anyhow::Result;
+use dotenv::var;
+use headless_chrome::Tab;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use anyhow::anyhow;
-use crate::{Context, run_with_timeout};
-use anyhow::Result;
-use dotenv::var;
-use headless_chrome::protocol::cdp::DOM::events::ChildNodeCountUpdatedEvent;
-use headless_chrome::Tab;
 use tokio::time::sleep;
 
 /// Navigates webadvisor
@@ -46,22 +45,16 @@ impl Date {
 impl PartialOrd for Date {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self.year.cmp(&other.year) {
-            Ordering::Less => {
-                Some(Ordering::Less)
-            }
-            Ordering::Equal => {
-                self.semester.partial_cmp(&other.semester)
-            }
-            Ordering::Greater => {
-                Some(Ordering::Greater)
-            }
+            Ordering::Less => Some(Ordering::Less),
+            Ordering::Equal => self.semester.partial_cmp(&other.semester),
+            Ordering::Greater => Some(Ordering::Greater),
         }
     }
 }
 fn extract_number(input: &str) -> Result<i64> {
     let mut number_str = String::new();
     for c in input.chars().rev() {
-        if c.is_digit(10) {
+        if c.is_ascii_digit() {
             number_str.push(c);
         } else if !number_str.is_empty() {
             break;
@@ -80,7 +73,7 @@ pub async fn wa_navigate_semester_precondition(context: Context) -> Result<bool>
     let guard = context
         .inner
         .read()
-        .map_err(|_| anyhow::Error::from(anyhow!("Poison error")))?;
+        .map_err(|_| anyhow!("Poison error"))?;
     if guard.is_none() {
         return Err(anyhow!("Expected browser + tab, found `None`."));
     }
@@ -94,8 +87,8 @@ pub async fn wa_navigate_semester_precondition(context: Context) -> Result<bool>
 }
 
 async fn retry_interaction<F, T>(mut f: F) -> Result<T>
-                                 where
-                                     F: FnMut() -> Result<T>,
+where
+    F: FnMut() -> Result<T>,
 {
     let mut attempts = 0;
     while attempts < 3 {
@@ -111,12 +104,12 @@ async fn retry_interaction<F, T>(mut f: F) -> Result<T>
     Err(anyhow!("Failed after 3 attempts"))
 }
 
-pub async fn wa_navigate_semester_function(mut context: Context) -> Result<()> {
+pub async fn wa_navigate_semester_function(context: Context) -> Result<()> {
     let tab = {
         let guard = context
             .inner
             .read()
-            .map_err(|_| anyhow::Error::from(anyhow!("Poison error")))?;
+            .map_err(|_| anyhow!("Poison error"))?;
         if guard.is_none() {
             return Err(anyhow!("Expected browser + tab, found `None`."));
         }
@@ -124,48 +117,51 @@ pub async fn wa_navigate_semester_function(mut context: Context) -> Result<()> {
     };
 
     let target_date = Date::from_str(var("TARGET_SEMESTER")?.as_str())?;
-    run_with_timeout(async move {
-        loop {
-            tab.wait_until_navigated()?;
+    run_with_timeout(
+        async move {
+            loop {
+                tab.wait_until_navigated()?;
 
-            let result = retry_interaction(|| {
-                let next = tab.find_element("#schedule-next-term")?;
-                let prev = tab.find_element("#schedule-prev-term")?;
-                let text = tab.find_element("#schedule-activeterm-text")?;
-                let text = text.get_inner_text()?;
-                let date_current = Date::from_str(&text)?;
-                match date_current.partial_cmp(&target_date) {
-                    Some(ord) => {
-                        match ord {
-                            Ordering::Less => prev.click()?,
-                            Ordering::Equal => return Ok(true),
-                            Ordering::Greater => next.click()?,
-                        };
-                    },
-                    _ => return Err(anyhow!("Failed to compare dates")),
+                let result = retry_interaction(|| {
+                    let next = tab.find_element("#schedule-next-term")?;
+                    let prev = tab.find_element("#schedule-prev-term")?;
+                    let text = tab.find_element("#schedule-activeterm-text")?;
+                    let text = text.get_inner_text()?;
+                    let date_current = Date::from_str(&text)?;
+                    match date_current.partial_cmp(&target_date) {
+                        Some(ord) => {
+                            match ord {
+                                Ordering::Less => prev.click()?,
+                                Ordering::Equal => return Ok(true),
+                                Ordering::Greater => next.click()?,
+                            };
+                        }
+                        _ => return Err(anyhow!("Failed to compare dates")),
+                    }
+                    Ok(false)
+                })
+                .await;
+                if let Ok(true) = result {
+                    return Ok(());
                 }
-                Ok(false)
-            }).await;
-            if let Ok(true) = result {
-                return Ok(())
+                if let Err(e) = result {
+                    return Err(anyhow!("Failed to interact with element: {}", e));
+                }
             }
-            if let Err(e) = result {
-                return Err(anyhow!("Failed to interact with element: {}", e));
-            }
-        }
-    }, Duration::from_secs(20)).await.map_or_else(|e| {
-        Err(anyhow!("Poison error, {e}"))
-    }, Ok)?;
+        },
+        Duration::from_secs(20),
+    )
+    .await
+    .map_or_else(|e| Err(anyhow!("Poison error, {e}")), Ok)?;
     Ok(())
 }
-
 
 pub async fn wa_register_precondition(context: Context) -> Result<bool> {
     let tab = {
         let guard = context
             .inner
             .read()
-            .map_err(|_| anyhow::Error::from(anyhow!("Poison error")))?;
+            .map_err(|_| anyhow!("Poison error"))?;
         if guard.is_none() {
             return Err(anyhow!("Expected browser + tab, found `None`."));
         }
@@ -182,9 +178,12 @@ pub fn button_pressing(tab: &Arc<Tab>) -> Result<f32> {
         }
     }
     let button = tab.wait_for_element("#register-button")?;
-    let script = format!(r#"
+    let script = format!(
+        r#"
         document.querySelector("{}").removeAttribute("disabled");
-    "#, "#register-button");
+    "#,
+        "#register-button"
+    );
     tab.evaluate(script.as_str(), true)?;
     button.click()?;
     Ok(1.0)
@@ -195,7 +194,7 @@ pub async fn wa_register_function(context: Context) -> Result<()> {
         let guard = context
             .inner
             .read()
-            .map_err(|_| anyhow::Error::from(anyhow!("Poison error")))?;
+            .map_err(|_| anyhow!("Poison error"))?;
         if guard.is_none() {
             return Err(anyhow!("Expected browser + tab, found `None`."));
         }
@@ -239,7 +238,10 @@ pub async fn wa_register_function(context: Context) -> Result<()> {
                 consecutive_successes = 0;
 
                 if total_fails >= MAX_TOTAL_FAILS {
-                    return Err(anyhow!("Failed to press button due to too many errors: {}", e));
+                    return Err(anyhow!(
+                        "Failed to press button due to too many errors: {}",
+                        e
+                    ));
                 }
 
                 if failure_count >= FAILURE_THRESHOLD {
@@ -252,7 +254,10 @@ pub async fn wa_register_function(context: Context) -> Result<()> {
         }
 
         // Log current statistics
-        println!("Success count: {}, Failure count: {}, Current wait time: {}", success_count, failure_count, wait_time);
+        println!(
+            "Success count: {}, Failure count: {}, Current wait time: {}",
+            success_count, failure_count, wait_time
+        );
 
         // Adjust wait time to stay within bounds
         wait_time = wait_time.clamp(0.1, 10.0);
