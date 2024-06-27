@@ -176,6 +176,11 @@ pub async fn wa_register_precondition(context: Context) -> Result<bool> {
 }
 
 pub fn button_pressing(tab: &Arc<Tab>) -> Result<f32> {
+    unsafe {
+        if let Ok(button) = tab.find_element("#register-button") {
+            button.click()?;
+        }
+    }
     let button = tab.wait_for_element("#register-button")?;
     let script = format!(r#"
         document.querySelector("{}").removeAttribute("disabled");
@@ -197,68 +202,60 @@ pub async fn wa_register_function(context: Context) -> Result<()> {
         guard.as_ref().unwrap().tab.clone()
     };
 
-    let mut wait_time: f32 = 0.05;
-    const MIN_WAIT_TIME: f32 = 0.1;
-    const MAX_WAIT_TIME: f32 = 10.0;
+    let mut lower_bound = 0.1;
+    let mut upper_bound = 10.0;
+    let mut wait_time: f32 = (lower_bound + upper_bound) / 2.0;
 
-    let mut ewma = ExponentiallyWeightedMovingAverage::new(1.0);
     let mut success_count = 0;
     let mut failure_count = 0;
+    let mut consecutive_successes = 0;
+    let mut total_fails = 0;
+
+    const SUCCESS_THRESHOLD: usize = 5;
+    const FAILURE_THRESHOLD: usize = 3;
+    const MAX_TOTAL_FAILS: usize = 10;
 
     loop {
         let result = button_pressing(&tab);
         match result {
             Ok(_) => {
-                println!("Button pressed successfully. Adjusting wait time.");
+                println!("Button pressed successfully. Recording success.");
                 success_count += 1;
-                ewma.update(wait_time, true);
+                consecutive_successes += 1;
+                failure_count = 0;
+
+                if consecutive_successes >= SUCCESS_THRESHOLD {
+                    // If we have enough consecutive successes, reduce the upper bound
+                    upper_bound = wait_time;
+                    wait_time = (lower_bound + upper_bound) / 2.0;
+                    consecutive_successes = 0; // Reset consecutive success count
+                    total_fails = 0;
+                }
             }
             Err(e) => {
                 eprintln!("Error pressing button: {}. Increasing wait time.", e);
                 failure_count += 1;
-                if failure_count >= 10 {
-                    return Err(anyhow!("Button pressing broke, {e}"));
+                total_fails += 1;
+                consecutive_successes = 0;
+
+                if total_fails >= MAX_TOTAL_FAILS {
+                    return Err(anyhow!("Failed to press button due to too many errors: {}", e));
                 }
-                ewma.update(wait_time, false);
+
+                if failure_count >= FAILURE_THRESHOLD {
+                    // If we have enough consecutive failures, increase the lower bound
+                    lower_bound = wait_time;
+                    wait_time = (lower_bound + upper_bound) / 2.0;
+                    failure_count = 0; // Reset failure count
+                }
             }
         }
-
-        wait_time = ewma.get_adjusted_wait_time();
-        println!("Adjusted wait time: {}", wait_time);
 
         // Log current statistics
         println!("Success count: {}, Failure count: {}, Current wait time: {}", success_count, failure_count, wait_time);
 
         // Adjust wait time to stay within bounds
-        wait_time = wait_time.clamp(MIN_WAIT_TIME, MAX_WAIT_TIME);
-
+        wait_time = wait_time.clamp(0.1, 10.0);
         sleep(Duration::from_secs_f32(wait_time)).await;
-    }
-}
-
-struct ExponentiallyWeightedMovingAverage {
-    current_value: f32,
-    smoothing_factor: f32,
-}
-
-impl ExponentiallyWeightedMovingAverage {
-    fn new(initial_value: f32) -> Self {
-        Self {
-            current_value: initial_value,
-            smoothing_factor: 0.3, // Initial smoothing factor
-        }
-    }
-
-    fn update(&mut self, new_value: f32, success: bool) {
-        if success {
-            self.smoothing_factor = 0.1; // Small smoothing factor for success
-        } else {
-            self.smoothing_factor = 0.5; // Larger smoothing factor for failure
-        }
-        self.current_value = self.smoothing_factor * new_value + (1.0 - self.smoothing_factor) * self.current_value;
-    }
-
-    fn get_adjusted_wait_time(&self) -> f32 {
-        self.current_value
     }
 }
